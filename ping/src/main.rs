@@ -1,4 +1,5 @@
 extern crate pnet;
+extern crate regex;
 
 use pnet::packet::icmp::{echo_request, IcmpCode, IcmpPacket, IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols::Icmp;
@@ -10,8 +11,10 @@ use pnet::packet::MutablePacket;
 use pnet::transport::{icmp_packet_iter, transport_channel, TransportChannelType};
 use pnet::util::checksum;
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::{thread, time};
+use regex::Regex;
+use std::error::Error;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs, SocketAddr};
+use std::{env, thread, time};
 
 const BUFF_SIZE: usize = 4096;
 const DEFAULT_SLEEP_TIME: u64 = 1000;
@@ -37,8 +40,10 @@ enum SupportedPacketType<'a> {
 }
 
 fn main() {
-    // TODO add v6 routes
-    let address = Ipv4Addr::new(192, 168, 0, 1);
+    let args: Vec<String> = env::args().collect();
+    let arg_ping_dest = &args[1];
+    // let address = Ipv4Addr::new(192, 168, 0, 1);
+    let address = resolve_ip_address(arg_ping_dest);
     let duration = time::Duration::from_millis(DEFAULT_SLEEP_TIME);
 
     // we're using the network layer (3) to manipulate raw sockets
@@ -60,14 +65,10 @@ fn main() {
         // I used a fn to create the packet, but had to create a bew enum (SupportedPacketType) to
         // wrap the results because we can't return non-matching instance of classes that inherit
         // different traits
-        let packet = create_packet(
-            IpAddr::V4(address),
-            &mut ipv4_packet_buf,
-            &mut icmp_packet_buf,
-        );
+        let packet = create_packet(address, &mut ipv4_packet_buf, &mut icmp_packet_buf);
         let send_result = match packet {
-            SupportedPacketType::V4(packet) => sender.send_to(packet, IpAddr::V4(address)),
-            SupportedPacketType::V6(packet) => sender.send_to(packet, IpAddr::V4(address)), // TODO change to V6 once we implement
+            SupportedPacketType::V4(packet) => sender.send_to(packet, address),
+            SupportedPacketType::V6(packet) => sender.send_to(packet, address), // TODO change to V6 once we implement
         };
         match send_result {
             Ok(result) => println!("packet sent with {} bytes ", result),
@@ -83,9 +84,35 @@ fn main() {
             Ok(None) => println!("timeout, no response"),
             Err(e) => println!("Error receiving packet {}", e),
         }
-
         thread::sleep(duration);
     }
+}
+
+/*
+parse input as IP address
+*/
+fn resolve_ip_address(input: &String) -> IpAddr {
+    // TODO
+    let reg_ipv4 = Regex::new("").unwrap();
+    let reg_ipv6 = Regex::new("").unwrap();
+    let reg_hostname = Regex::new("").unwrap();
+
+    let ip_addr: IpAddr;
+    // determine whether IP address or domain is supplied
+    if reg_hostname.is_match(input) {
+        let mut addr_iter = "google.com:80".to_socket_addrs().unwrap();
+        match addr_iter.next().unwrap() {
+            SocketAddr::V4(socket_addr) => ip_addr = IpAddr::V4(*socket_addr.ip()),
+            SocketAddr::V6(socket_addr) => ip_addr = IpAddr::V6(*socket_addr.ip()),
+        };
+    } else if reg_ipv4.is_match(input) || reg_ipv6.is_match(input) {
+        ip_addr = input.parse().unwrap();
+    } else {
+        unimplemented!("TODO");
+    }
+
+    println!("ip address {}", ip_addr);
+    return ip_addr;
 }
 
 /*
@@ -141,7 +168,5 @@ fn create_ipv6_packet<'a>(
     buffer_ip: &'a mut [u8],
     buffer_icmp: &'a mut [u8],
 ) -> MutableIpv6Packet<'a> {
-    let mut ipv6_packet = MutableIpv6Packet::new(buffer_ip).unwrap();
-    // TODO
-    return ipv6_packet;
+    unimplemented!("TODO");
 }
