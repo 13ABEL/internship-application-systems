@@ -1,7 +1,7 @@
 extern crate pnet;
 extern crate regex;
 
-use pnet::packet::icmp::{echo_request, IcmpCode, IcmpPacket, IcmpTypes, MutableIcmpPacket};
+use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols::Icmp;
 use pnet::packet::ipv4::MutableIpv4Packet;
 use pnet::packet::ipv6::MutableIpv6Packet;
@@ -11,11 +11,12 @@ use pnet::packet::MutablePacket;
 use pnet::transport::{icmp_packet_iter, transport_channel, TransportChannelType};
 use pnet::util::checksum;
 
-use signal_hook::{register, SIGINT};
 use regex::Regex;
+use signal_hook::{register, SIGINT};
 use std::error::Error;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs, SocketAddr};
-use std::{fmt, env, thread, time, process};
+use std::time::{Instant};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::{env, process, thread, time};
 
 const BUFF_SIZE: usize = 4096;
 const DEFAULT_SLEEP_TIME: u64 = 1000;
@@ -32,13 +33,16 @@ const ICMP_HEADER_LEN: usize = 8;
 const ICMP_PAYLOAD_LEN: usize = 32;
 // "word" position of the checksum field - starts at the second word (each are 2 bytes)
 const ICMP_CHECKSUM_POS: usize = 2;
-
 const ICMP_CODE: u8 = 0;
 
 enum SupportedPacketType<'a> {
     V4(MutableIpv4Packet<'a>),
     V6(MutableIpv6Packet<'a>),
 }
+
+static mut sent: usize = 0;
+static mut received: usize = 0;
+// static time: Instant = Instant::zero();
 
 fn main() {
     unsafe {
@@ -50,8 +54,6 @@ fn main() {
     let address = resolve_ip_address(arg_ping_dest);
     let duration = time::Duration::from_millis(DEFAULT_SLEEP_TIME);
 
-
-
     // we're using the network layer (3) to manipulate raw sockets
     let channel_type = TransportChannelType::Layer3(Icmp);
     let (mut sender, mut receiver) = match transport_channel(BUFF_SIZE, channel_type) {
@@ -60,6 +62,9 @@ fn main() {
     };
 
     let mut receiver_iter = icmp_packet_iter(&mut receiver);
+
+    let packet_size = IPV4_HEADER_LEN + ICMP_HEADER_LEN + ICMP_PAYLOAD_LEN;
+    println!("PINGER: {}({}) sent with {} bytes", arg_ping_dest, address, packet_size);
 
     loop {
         // easier to maintain lifetime of the buffers for packets by declaring them here
@@ -72,21 +77,30 @@ fn main() {
         // wrap the results because we can't return non-matching instance of classes that inherit
         // different traits
         let packet = create_packet(address, &mut ipv4_packet_buf, &mut icmp_packet_buf);
+        let time_sent = Instant::now();
         let send_result = match packet {
             SupportedPacketType::V4(packet) => sender.send_to(packet, address),
-            SupportedPacketType::V6(packet) => sender.send_to(packet, address), // TODO change to V6 once we implement
+            SupportedPacketType::V6(packet) => sender.send_to(packet, address),
         };
         match send_result {
-            Ok(result) => println!("packet sent with {} bytes ", result),
+            Ok(_) => { 
+                // println!("packet sent with {} bytes", result);
+                unsafe { sent += 1 }
+            }
             Err(e) => panic!("Error sending packet {}", e),
         };
-
-        match receiver_iter.next_with_timeout(time::Duration::from_millis(2 * DEFAULT_SLEEP_TIME)) {
-            Ok(Some((packet, ip_addr))) => println!(
-                "packet response received {} {} ",
-                packet.get_checksum(),
-                ip_addr
-            ),
+        
+        match receiver_iter.next_with_timeout(time::Duration::from_millis(DEFAULT_SLEEP_TIME)) {
+            Ok(Some((_, ip_addr))) => {
+                // 
+                println!(
+                    "{} bytes from {}: icmp_seq=1 ttl=55 time={} ms",
+                    0,
+                    ip_addr,
+                    (time_sent.elapsed().as_micros() as f64)/1000.0
+                );
+                unsafe { received += 1 }
+            }
             Ok(None) => println!("timeout, no response"),
             Err(e) => println!("Error receiving packet {}", e),
         }
@@ -98,13 +112,15 @@ fn main() {
 parse input as IP address
 */
 fn resolve_ip_address(input: &String) -> IpAddr {
-    // regex taken from: 
-    // ipv4: https://www.oreilly.com/library/view/regular-expressions-cookbook/9780596802837/ch07s16.html 
+    // regex taken from:
+    // ipv4: https://www.oreilly.com/library/view/regular-expressions-cookbook/9780596802837/ch07s16.html
     // ipv6: https://www.oreilly.com/library/view/regular-expressions-cookbook/9781449327453/ch08s17.html
     // domain: https://regexr.com/3au3g
     let reg_ipv4 = Regex::new(r#"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"#).unwrap();
     let reg_ipv6 = Regex::new("^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$").unwrap();
-    let reg_hostname = Regex::new(r#"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]"#).unwrap();
+    let reg_hostname =
+        Regex::new(r#"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]"#)
+            .unwrap();
 
     let ip_addr: IpAddr;
     // determine whether IP address or domain is supplied
@@ -120,7 +136,6 @@ fn resolve_ip_address(input: &String) -> IpAddr {
         panic!("Please enter a valid domain or IP address");
     }
 
-    println!("ip address {}", ip_addr);
     return ip_addr;
 }
 
@@ -177,14 +192,22 @@ fn create_ipv6_packet<'a>(
     ip_packet_buf: &'a mut [u8],
     icmp_packet_buf: &'a mut [u8],
 ) -> MutableIpv6Packet<'a> {
-
     let mut ipv6_packet = MutableIpv6Packet::new(ip_packet_buf).unwrap();
     ipv6_packet.set_version(6);
 
     return ipv6_packet;
 }
 
-fn finish() {
+unsafe fn finish() {
     // TODO print all info out
+    println!("--- 2607:f8b0:400b:808::200e ping statistics ---");
+
+    let packet_loss = (sent - received) / (sent + received) * 100;
+
+    println!(
+        "\n{} packets transmitted, {} received, {}% packet loss, time {} ms",
+        sent, received, packet_loss, 0
+    );
+
     process::exit(0);
 }
