@@ -11,10 +11,11 @@ use pnet::packet::MutablePacket;
 use pnet::transport::{icmp_packet_iter, transport_channel, TransportChannelType};
 use pnet::util::checksum;
 
+use signal_hook::{register, SIGINT};
 use regex::Regex;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs, SocketAddr};
-use std::{env, thread, time};
+use std::{fmt, env, thread, time, process};
 
 const BUFF_SIZE: usize = 4096;
 const DEFAULT_SLEEP_TIME: u64 = 1000;
@@ -40,11 +41,16 @@ enum SupportedPacketType<'a> {
 }
 
 fn main() {
+    unsafe {
+        register(SIGINT, || finish()).unwrap();
+    }
+
     let args: Vec<String> = env::args().collect();
     let arg_ping_dest = &args[1];
-    // let address = Ipv4Addr::new(192, 168, 0, 1);
     let address = resolve_ip_address(arg_ping_dest);
     let duration = time::Duration::from_millis(DEFAULT_SLEEP_TIME);
+
+
 
     // we're using the network layer (3) to manipulate raw sockets
     let channel_type = TransportChannelType::Layer3(Icmp);
@@ -92,15 +98,18 @@ fn main() {
 parse input as IP address
 */
 fn resolve_ip_address(input: &String) -> IpAddr {
-    // TODO
-    let reg_ipv4 = Regex::new("").unwrap();
-    let reg_ipv6 = Regex::new("").unwrap();
-    let reg_hostname = Regex::new("").unwrap();
+    // regex taken from: 
+    // ipv4: https://www.oreilly.com/library/view/regular-expressions-cookbook/9780596802837/ch07s16.html 
+    // ipv6: https://www.oreilly.com/library/view/regular-expressions-cookbook/9781449327453/ch08s17.html
+    // domain: https://regexr.com/3au3g
+    let reg_ipv4 = Regex::new(r#"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"#).unwrap();
+    let reg_ipv6 = Regex::new("^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$").unwrap();
+    let reg_hostname = Regex::new(r#"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]"#).unwrap();
 
     let ip_addr: IpAddr;
     // determine whether IP address or domain is supplied
     if reg_hostname.is_match(input) {
-        let mut addr_iter = "google.com:80".to_socket_addrs().unwrap();
+        let mut addr_iter = format!("{}:80", *input).to_socket_addrs().unwrap();
         match addr_iter.next().unwrap() {
             SocketAddr::V4(socket_addr) => ip_addr = IpAddr::V4(*socket_addr.ip()),
             SocketAddr::V6(socket_addr) => ip_addr = IpAddr::V6(*socket_addr.ip()),
@@ -108,7 +117,7 @@ fn resolve_ip_address(input: &String) -> IpAddr {
     } else if reg_ipv4.is_match(input) || reg_ipv6.is_match(input) {
         ip_addr = input.parse().unwrap();
     } else {
-        unimplemented!("TODO");
+        panic!("Please enter a valid domain or IP address");
     }
 
     println!("ip address {}", ip_addr);
@@ -165,8 +174,17 @@ fn create_ipv4_packet<'a>(
 
 fn create_ipv6_packet<'a>(
     dest: Ipv6Addr,
-    buffer_ip: &'a mut [u8],
-    buffer_icmp: &'a mut [u8],
+    ip_packet_buf: &'a mut [u8],
+    icmp_packet_buf: &'a mut [u8],
 ) -> MutableIpv6Packet<'a> {
-    unimplemented!("TODO");
+
+    let mut ipv6_packet = MutableIpv6Packet::new(ip_packet_buf).unwrap();
+    ipv6_packet.set_version(6);
+
+    return ipv6_packet;
+}
+
+fn finish() {
+    // TODO print all info out
+    process::exit(0);
 }
