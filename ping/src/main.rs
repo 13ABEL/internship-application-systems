@@ -14,9 +14,10 @@ use pnet::util::checksum;
 use regex::Regex;
 use signal_hook::{register, SIGINT};
 use std::error::Error;
-use std::time::{Instant};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::time::Instant;
 use std::{env, process, thread, time};
+use dns_lookup::{lookup_host};
 
 const BUFF_SIZE: usize = 4096;
 const DEFAULT_SLEEP_TIME: u64 = 1000;
@@ -64,7 +65,10 @@ fn main() {
     let mut receiver_iter = icmp_packet_iter(&mut receiver);
 
     let packet_size = IPV4_HEADER_LEN + ICMP_HEADER_LEN + ICMP_PAYLOAD_LEN;
-    println!("PINGER: {}({}) sent with {} bytes", arg_ping_dest, address, packet_size);
+    println!(
+        "PINGER: {}({}) sent with {} bytes",
+        arg_ping_dest, address, packet_size
+    );
 
     loop {
         // easier to maintain lifetime of the buffers for packets by declaring them here
@@ -83,21 +87,20 @@ fn main() {
             SupportedPacketType::V6(packet) => sender.send_to(packet, address),
         };
         match send_result {
-            Ok(_) => { 
+            Ok(_) => {
                 // println!("packet sent with {} bytes", result);
                 unsafe { sent += 1 }
             }
             Err(e) => panic!("Error sending packet {}", e),
         };
-        
         match receiver_iter.next_with_timeout(time::Duration::from_millis(DEFAULT_SLEEP_TIME)) {
             Ok(Some((_, ip_addr))) => {
-                // 
+                //
                 println!(
                     "{} bytes from {}: icmp_seq=1 ttl=55 time={} ms",
                     0,
                     ip_addr,
-                    (time_sent.elapsed().as_micros() as f64)/1000.0
+                    (time_sent.elapsed().as_micros() as f64) / 1000.0
                 );
                 unsafe { received += 1 }
             }
@@ -119,17 +122,23 @@ fn resolve_ip_address(input: &String) -> IpAddr {
     let reg_ipv4 = Regex::new(r#"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"#).unwrap();
     let reg_ipv6 = Regex::new("^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$").unwrap();
     let reg_hostname =
-        Regex::new(r#"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]"#)
+        Regex::new(r#"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){0,2}[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$"#)
             .unwrap();
 
     let ip_addr: IpAddr;
     // determine whether IP address or domain is supplied
     if reg_hostname.is_match(input) {
-        let mut addr_iter = format!("{}:80", *input).to_socket_addrs().unwrap();
-        match addr_iter.next().unwrap() {
-            SocketAddr::V4(socket_addr) => ip_addr = IpAddr::V4(*socket_addr.ip()),
-            SocketAddr::V6(socket_addr) => ip_addr = IpAddr::V6(*socket_addr.ip()),
-        };
+        let lookup_results = lookup_host(input).unwrap();
+        // for address in lookup_results {
+        //     println!("resolved address {} ipv4 {} ipv6 {}", address, address.is_ipv4(), address.is_ipv6(),);
+        // }
+        // TODO allow force v4/v6, but for now just use v6 (ie. the first result)
+        match lookup_results.len() {
+            // default to ipv4 if both are available since ipv6 is currently not working
+            2 => ip_addr = lookup_results[1],
+            1 => ip_addr = lookup_results[0],
+            _ => panic!("host name lookup returned with not results"),
+        }
     } else if reg_ipv4.is_match(input) || reg_ipv6.is_match(input) {
         ip_addr = input.parse().unwrap();
     } else {
@@ -194,6 +203,7 @@ fn create_ipv6_packet<'a>(
 ) -> MutableIpv6Packet<'a> {
     let mut ipv6_packet = MutableIpv6Packet::new(ip_packet_buf).unwrap();
     ipv6_packet.set_version(6);
+    // ipv6_packet.set_icmp_type()
 
     return ipv6_packet;
 }
