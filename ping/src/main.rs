@@ -21,7 +21,7 @@ use signal_hook::{register, SIGINT};
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Instant;
-use std::{env, process, thread, time};
+use std::{process, thread, time};
 
 // region packet const
 
@@ -34,17 +34,21 @@ const IPV6_HEADER_LEN: usize = 40;
 
 // our ICMP packet defaults to 64 bytes
 const ICMP_HEADER_LEN: usize = 8;
-const ICMP_PAYLOAD_LEN_DEFAULT: usize = 56;
+const ICMP_PAYLOAD_LEN_DEFAULT: u16 = 56;
 // "word" position of the checksum field - starts at the second word (each are 2 bytes)
-const ICMP_CHECKSUM_POS: usize = 2;
+const ICMP_CHECKSUM_POS: usize = 1;
 const ICMP_CODE: u8 = 0;
 
 // endregion
 
 const BUFF_SIZE: usize = 4096;
 const DEFAULT_SLEEP_TIME: u64 = 1000;
-const DEFAULT_TIMEOUT: u64 = 1;
-const DEFAULT_TTL: u64 = 1;
+const DEFAULT_TIMEOUT: usize = 1;
+const DEFAULT_TTL: u8 = 64;
+const MAX_IPV4_PACKET_LEN: usize = 65535;
+const MAX_ICMP_PACKET_LEN: usize = MAX_IPV4_PACKET_LEN - IPV4_HEADER_LEN;
+const MAX_TTL: u64 = 255;
+const MAX_TIMEOUT: usize = 20;
 
 enum SupportedPacketType<'a> {
     V4(MutableIpv4Packet<'a>),
@@ -62,28 +66,53 @@ fn main() {
         None => panic!("Please supply the address to ping"),
     };
     let ttl = match arg_matches.value_of(main_clap::ARG_TTL) {
-        Some(input) => input.parse::<u64>().expect("the ttl must be an integer"),
+        Some(input) => {
+            let full_ttl = input.parse::<u64>().expect("the ttl must be an integer");
+            match full_ttl {
+                0..=MAX_TTL => full_ttl as u8,
+                _ => panic!("the maximum ttl is 255"),
+            }
+        }
         None => DEFAULT_TTL,
     };
-    let icmp_payload_len = match arg_matches.value_of(main_clap::ARG_PACKET_SIZE) {
-        Some(input) => input
-            .parse::<usize>()
-            .expect("the packet size must be an integer"),
-        None => ICMP_PAYLOAD_LEN_DEFAULT,
+
+    let icmp_payload_len: usize = match arg_matches.value_of(main_clap::ARG_PACKET_SIZE) {
+        Some(input) => {
+            let full_payload_len = input
+                .parse::<usize>()
+                .expect("the packet size must be an integer");
+
+            match full_payload_len {
+                20..=MAX_ICMP_PACKET_LEN => full_payload_len,
+                _ => panic!(
+                    "the icmp packet length must be between {} and {} bytes",
+                    ICMP_HEADER_LEN, MAX_ICMP_PACKET_LEN
+                ),
+            }
+        }
+        None => ICMP_PAYLOAD_LEN_DEFAULT as usize,
     };
-    let timeout = match arg_matches.value_of(main_clap::ARG_TIMEOUT) {
-        Some(input) => input
-            .parse::<u64>()
-            .expect("the timeout must be an integer"),
+    let timeout_length = match arg_matches.value_of(main_clap::ARG_TIMEOUT) {
+        Some(input) => {
+            let full_timeout_len = input
+                .parse::<usize>()
+                .expect("the timeout must be an integer");
+
+            match full_timeout_len {
+                1..=MAX_TIMEOUT => full_timeout_len,
+                _ => panic!(
+                    "the timeout must be between {} and {} seconds",
+                    1, MAX_TIMEOUT
+                ),
+            }
+        }
         None => DEFAULT_TIMEOUT,
     };
 
+    // register the SIGINT handler
     unsafe {
         register(SIGINT, || finish()).unwrap();
     }
-
-    // let args: Vec<String> = env::args().collect();
-    // let arg_ping_dest = &args[1];
 
     let address = resolve_ip_address(&arg_ping_dest).unwrap();
     let (ip_packet_size, protocol) = match address {
@@ -113,7 +142,9 @@ fn main() {
 
     println!(
         "PINGER: {}({}) with {} bytes of data",
-        arg_ping_dest, address, ip_packet_size
+        arg_ping_dest,
+        address,
+        ICMP_HEADER_LEN + icmp_payload_len
     );
 
     loop {
@@ -128,6 +159,7 @@ fn main() {
         // different traits
         let packet = create_packet(
             address,
+            ttl,
             &mut ip_packet_buf,
             &mut icmp_packet_buf,
             icmp_payload_len,
@@ -145,18 +177,22 @@ fn main() {
             Err(e) => panic!("Error sending packet {}", e),
         };
 
-        match receiver_iter.next_with_timeout(time::Duration::from_millis(DEFAULT_TIMEOUT)) {
+        match receiver_iter.next_with_timeout(time::Duration::from_secs(timeout_length as u64)) {
             Ok(Some((_, ip_addr))) => {
                 println!(
-                    "{} bytes from {}: icmp_seq=1 ttl=55 time={} ms",
-                    ip_packet_size,
+                    "{} bytes from {}: ttl={} time={} ms",
+                    ICMP_HEADER_LEN + icmp_payload_len,
                     ip_addr,
+                    ttl,
                     (time_sent.elapsed().as_micros() as f64) / 1000.0
                 );
                 unsafe { RECEIVED += 1 }
             }
             Ok(None) => {
-                println!("packet timed out: time={} ms", DEFAULT_TIMEOUT);
+                println!(
+                    "packet timed out: time={} ms",
+                    time_sent.elapsed().as_millis()
+                );
             }
             Err(e) => println!("Error receiving packet {}", e),
         }
@@ -173,7 +209,7 @@ fn resolve_ip_address(input: &String) -> Result<IpAddr, Box<dyn Error>> {
     // ipv6: https://www.oreilly.com/library/view/regular-expressions-cookbook/9781449327453/ch08s17.html
     // domain: https://regexr.com/3au3g
     let reg_ipv4 = Regex::new(r#"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$"#)?;
-    let reg_ipv6 = Regex::new("^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$")?;
+    let reg_ipv6 = Regex::new("^(?:[a-fA-F0-9]{1,4}:){7}[a-fA-F0-9]{1,4}$")?;
     let reg_hostname = Regex::new(
         r#"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){0,2}[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$"#,
     )?;
@@ -204,6 +240,7 @@ ie. Ipv4Packet for Ipv4Addr and Ipv6Packet for Ipv6Addr
 */
 fn create_packet<'a>(
     address: IpAddr,
+    ttl: u8,
     ip_packet_buf: &'a mut [u8],
     icmp_packet_buf: &'a mut [u8],
     icmp_payload_size: usize,
@@ -211,12 +248,14 @@ fn create_packet<'a>(
     return match address {
         IpAddr::V4(ip_addr) => SupportedPacketType::V4(create_ipv4_packet(
             ip_addr,
+            ttl,
             ip_packet_buf,
             icmp_packet_buf,
             icmp_payload_size,
         )),
         IpAddr::V6(ip_addr) => SupportedPacketType::V6(create_ipv6_packet(
             ip_addr,
+            ttl,
             ip_packet_buf,
             icmp_packet_buf,
             icmp_payload_size,
@@ -230,6 +269,7 @@ which helped me understand I had to wrap my ICMP packet within a IP[v4/v6] packe
 */
 fn create_ipv4_packet<'a>(
     dest: Ipv4Addr,
+    ttl: u8,
     ip_packet_buf: &'a mut [u8],
     icmp_packet_buf: &'a mut [u8],
     icmp_payload_size: usize,
@@ -242,7 +282,7 @@ fn create_ipv4_packet<'a>(
     ipv4_packet.set_version(4);
     ipv4_packet.set_header_length(IPV4_HEADER_WORD_LEN);
     ipv4_packet.set_total_length((IPV4_HEADER_LEN + icmp_payload_size) as u16);
-    // TODO set ttl
+    ipv4_packet.set_ttl(ttl);
     ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
     ipv4_packet.set_destination(dest);
 
@@ -260,6 +300,7 @@ fn create_ipv4_packet<'a>(
 
 fn create_ipv6_packet<'a>(
     dest: Ipv6Addr,
+    ttl: u8,
     ip_packet_buf: &'a mut [u8],
     icmp_packet_buf: &'a mut [u8],
     icmp_payload_size: usize,
@@ -268,7 +309,7 @@ fn create_ipv6_packet<'a>(
         MutableIpv6Packet::new(ip_packet_buf).expect("invalid packet buffer size");
     ipv6_packet.set_version(6);
     ipv6_packet.set_destination(dest);
-    ipv6_packet.set_hop_limit(4);
+    ipv6_packet.set_hop_limit(ttl);
 
     let mut icmp_packet = MutableIcmpv6Packet::new(icmp_packet_buf).unwrap();
     let checksum = checksum(&icmp_packet.packet_mut(), ICMP_CHECKSUM_POS);
@@ -277,17 +318,16 @@ fn create_ipv6_packet<'a>(
     ipv6_packet.set_payload_length((ICMP_HEADER_LEN + icmp_payload_size) as u16);
     ipv6_packet.set_payload(icmp_packet.packet_mut());
 
-    unimplemented!("IPV6 is currently unimplemented");
+    return ipv6_packet;
+    // unimplemented!("IPV6 is currently unimplemented");
 }
 
 unsafe fn finish() {
-    // TODO print all info out
-    println!("---  ping statistics ---");
+    println!("\n--- ping statistics ---");
 
     let packet_loss = (SENT - RECEIVED) / (SENT + RECEIVED) * 100;
-
     println!(
-        "\n{} packets transmitted, {} received, {}% packet loss",
+        "{} packets transmitted, {} received, {}% packet loss",
         SENT, RECEIVED, packet_loss,
     );
 
