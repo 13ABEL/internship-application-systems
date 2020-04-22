@@ -2,7 +2,7 @@
 This is a (basic) commandline ping cline written in Rust
 
 ## Build instructions
-From the project root
+From the project root:
 ```bash
 # the executable can be found in [./target/debug/ping]
 cargo build
@@ -21,16 +21,20 @@ Note: this need to run this as su because we need to use raw sockets to send icm
 
 
 ## Features:
-- setting custom **ttl**: the number of times a packet can be passed along before it is discarded (default = 64)
-- set custom **icmp packet size**(including header): between 8 and 65535 (default = 64)
+- setting custom **ttl**: the number of times a packet can be passed along before it is discarded - between 0 and 255 (default = 64)
+- set custom **icmp packet size**(including header): between 8 and 1024 (default = 64). The size constraint is explained in the see more section
 - set custom **time out**: time to wait for a response - between 1 and 20 seconds (default = 1) 
 
 for more information, you can run the compiled executable with the help flag
-```
+```bash
 ./target/debug/ping 127.0.0.1 --help
 ```
 
 What doesn't work:
+- sending large packets using IPV4: the max packet size should be 65535, but it yields an error when I try to send it so I've set a hard limit for now
+```
+Error sending packet Message too long (os error 90)
+```
 - IPV6: The ipv6 logic has been implemented, but I got blocked an error. I spent a while trying to debug this but haven't been able to find a solution (ipv6 is enabled on my device).
 ```
 Error sending packet Address family not supported by protocol (os error 97)

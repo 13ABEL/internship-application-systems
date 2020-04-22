@@ -41,11 +41,12 @@ const ICMP_CODE: u8 = 0;
 
 // endregion
 
-const BUFF_SIZE: usize = 4096;
+const DEFAULT_BUFF_SIZE: usize = 4096;
 const DEFAULT_SLEEP_TIME: u64 = 1000;
 const DEFAULT_TIMEOUT: usize = 1;
 const DEFAULT_TTL: u8 = 64;
-const MAX_IPV4_PACKET_LEN: usize = 65535;
+// the max ipv4 packet size should be 65535, but results in a error when sending 
+const MAX_IPV4_PACKET_LEN: usize = 1044;
 const MAX_ICMP_PACKET_LEN: usize = MAX_IPV4_PACKET_LEN - IPV4_HEADER_LEN;
 const MAX_TTL: u64 = 255;
 const MAX_TIMEOUT: usize = 20;
@@ -69,21 +70,21 @@ fn main() {
         Some(input) => {
             let full_ttl = input.parse::<u64>().expect("the ttl must be an integer");
             match full_ttl {
-                0..=MAX_TTL => full_ttl as u8,
-                _ => panic!("the maximum ttl is 255"),
+                1..=MAX_TTL => full_ttl as u8,
+                _ => panic!("the ttl is 1 to {}", MAX_TTL),
             }
         }
         None => DEFAULT_TTL,
     };
 
-    let icmp_payload_len: usize = match arg_matches.value_of(main_clap::ARG_PACKET_SIZE) {
+    let icmp_packet_len: usize = match arg_matches.value_of(main_clap::ARG_PACKET_SIZE) {
         Some(input) => {
             let full_payload_len = input
                 .parse::<usize>()
                 .expect("the packet size must be an integer");
 
             match full_payload_len {
-                20..=MAX_ICMP_PACKET_LEN => full_payload_len,
+                8..=MAX_ICMP_PACKET_LEN => full_payload_len,
                 _ => panic!(
                     "the icmp packet length must be between {} and {} bytes",
                     ICMP_HEADER_LEN, MAX_ICMP_PACKET_LEN
@@ -117,12 +118,12 @@ fn main() {
     let address = resolve_ip_address(&arg_ping_dest).unwrap();
     let (ip_packet_size, protocol) = match address {
         IpAddr::V4(_) => {
-            let size = IPV4_HEADER_LEN + ICMP_HEADER_LEN + icmp_payload_len;
+            let size = IPV4_HEADER_LEN + icmp_packet_len;
             let protocol = Icmp;
             (size, protocol)
         }
         IpAddr::V6(_) => {
-            let size = IPV6_HEADER_LEN + ICMP_HEADER_LEN + icmp_payload_len;
+            let size = IPV6_HEADER_LEN + icmp_packet_len;
             let protocol = Icmpv6;
             (size, protocol)
         }
@@ -132,7 +133,7 @@ fn main() {
 
     // we're using the network layer (3) to manipulate raw sockets and send icmp packets
     let channel_type = TransportChannelType::Layer3(protocol);
-    let (mut sender, mut receiver) = match transport_channel(BUFF_SIZE, channel_type) {
+    let (mut sender, mut receiver) = match transport_channel(DEFAULT_BUFF_SIZE, channel_type) {
         Ok((sender, receiver)) => (sender, receiver),
         Err(e) => panic!("Error initializing the channel {}", e),
     };
@@ -144,7 +145,7 @@ fn main() {
         "PINGER: {}({}) with {} bytes of data",
         arg_ping_dest,
         address,
-        ICMP_HEADER_LEN + icmp_payload_len
+        icmp_packet_len
     );
 
     loop {
@@ -152,7 +153,7 @@ fn main() {
         // borrow them to create packets which are assigned the a same lifetime as these
         // buffers -> should go out of scope when buffers go out of scope
         let mut ip_packet_buf = vec![0u8; ip_packet_size];
-        let mut icmp_packet_buf = vec![0u8; ICMP_HEADER_LEN + icmp_payload_len];
+        let mut icmp_packet_buf = vec![0u8; icmp_packet_len];
         // this has weird ergonomics that I'm not a huge fan of, but I'm still learning rust
         // I used a fn to create the packet, but had to create a new enum (SupportedPacketType) to
         // wrap the results because we can't return non-matching instance of classes that inherit
@@ -162,7 +163,7 @@ fn main() {
             ttl,
             &mut ip_packet_buf,
             &mut icmp_packet_buf,
-            icmp_payload_len,
+            icmp_packet_len,
         );
         let time_sent = Instant::now();
         let send_result = match packet {
@@ -181,7 +182,7 @@ fn main() {
             Ok(Some((_, ip_addr))) => {
                 println!(
                     "{} bytes from {}: ttl={} time={} ms",
-                    ICMP_HEADER_LEN + icmp_payload_len,
+                    icmp_packet_len,
                     ip_addr,
                     ttl,
                     (time_sent.elapsed().as_micros() as f64) / 1000.0
@@ -243,7 +244,7 @@ fn create_packet<'a>(
     ttl: u8,
     ip_packet_buf: &'a mut [u8],
     icmp_packet_buf: &'a mut [u8],
-    icmp_payload_size: usize,
+    icmp_packet_len: usize,
 ) -> SupportedPacketType<'a> {
     return match address {
         IpAddr::V4(ip_addr) => SupportedPacketType::V4(create_ipv4_packet(
@@ -251,14 +252,14 @@ fn create_packet<'a>(
             ttl,
             ip_packet_buf,
             icmp_packet_buf,
-            icmp_payload_size,
+            icmp_packet_len,
         )),
         IpAddr::V6(ip_addr) => SupportedPacketType::V6(create_ipv6_packet(
             ip_addr,
             ttl,
             ip_packet_buf,
             icmp_packet_buf,
-            icmp_payload_size,
+            icmp_packet_len,
         )),
     };
 }
@@ -272,7 +273,7 @@ fn create_ipv4_packet<'a>(
     ttl: u8,
     ip_packet_buf: &'a mut [u8],
     icmp_packet_buf: &'a mut [u8],
-    icmp_payload_size: usize,
+    icmp_packet_len: usize,
 ) -> MutableIpv4Packet<'a> {
     let mut ipv4_packet =
         MutableIpv4Packet::new(ip_packet_buf).expect("unable to create ipv4 packet");
@@ -281,7 +282,7 @@ fn create_ipv4_packet<'a>(
     // not setting will cause the ping to fail (ie. server will not echo our pring)
     ipv4_packet.set_version(4);
     ipv4_packet.set_header_length(IPV4_HEADER_WORD_LEN);
-    ipv4_packet.set_total_length((IPV4_HEADER_LEN + icmp_payload_size) as u16);
+    ipv4_packet.set_total_length((IPV4_HEADER_LEN + icmp_packet_len) as u16);
     ipv4_packet.set_ttl(ttl);
     ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
     ipv4_packet.set_destination(dest);
@@ -303,7 +304,7 @@ fn create_ipv6_packet<'a>(
     ttl: u8,
     ip_packet_buf: &'a mut [u8],
     icmp_packet_buf: &'a mut [u8],
-    icmp_payload_size: usize,
+    icmp_packet_len: usize,
 ) -> MutableIpv6Packet<'a> {
     let mut ipv6_packet =
         MutableIpv6Packet::new(ip_packet_buf).expect("invalid packet buffer size");
@@ -315,7 +316,7 @@ fn create_ipv6_packet<'a>(
     let checksum = checksum(&icmp_packet.packet_mut(), ICMP_CHECKSUM_POS);
     icmp_packet.set_checksum(checksum);
     icmp_packet.set_icmpv6_type(Icmpv6Types::EchoRequest);
-    ipv6_packet.set_payload_length((ICMP_HEADER_LEN + icmp_payload_size) as u16);
+    ipv6_packet.set_payload_length((ICMP_HEADER_LEN + icmp_packet_len) as u16);
     ipv6_packet.set_payload(icmp_packet.packet_mut());
 
     return ipv6_packet;
