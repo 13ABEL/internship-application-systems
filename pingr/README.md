@@ -1,4 +1,4 @@
-# PINGER - a Rust ping clone
+# PINGR - a rust ping clone
 This is a (basic) commandline ping cline written in Rust
 
 ## Build instructions
@@ -12,7 +12,7 @@ cargo build
 Run the executable with either the hostname or IP destination address you want to ping.
 PINGER will send icmp echo requests to the destination in a loop and display response info until you terminate the program. 
 
-Terminatign with SIGINT (ctrl + c) will display the total number of packets transmitted and lost, as well as packet loss
+Termination with SIGINT (ctrl + c) will display the total number of packets transmitted and lost, as well as packet loss
 
 ```bash
 sudo ./target/debug/ping 127.0.0.1

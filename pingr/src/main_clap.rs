@@ -8,7 +8,7 @@ pub const ARG_PACKET_SIZE : &'static str = "packet-size";
 pub const ARG_TIMEOUT : &'static str= "timeout";
 
 pub fn clap_desc() -> ArgMatches<'static> {
-    return App::new("Ping")
+    return App::new("pingr")
         .version("0.1.0")
         .author("Richard Wei <therichardwei@gmail.com>")
         .arg(

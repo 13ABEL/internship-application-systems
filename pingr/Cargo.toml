@@ -1,5 +1,5 @@
 [package]
-name = "ping"
+name = "pingr"
 version = "0.1.0"
 authors = ["13abel <therichardwei@gmail.com>"]
 edition = "2018"
